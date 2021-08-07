@@ -5,9 +5,9 @@
 ### Found @ https://PeacePong.com
 ###
 ### Run this script using the following command:
-### python3 OpenBCI_EMG_PeacePong_Ganglion.py --serial-port /dev/cu.usbmodem11 --board-id 1
+### python3 OpenBCI_EMG_Controller_Ganglion_PyQt.py --serial-port /dev/cu.usbmodem11 --board-id 1
 ### Ganglion + WiFi command:
-### python3 OpenBCI_EMG_PeacePong_Ganglion.py --board-id 4 --ip-address 10.0.1.37 --ip-port 3000
+### python3 OpenBCI_EMG_Controller_Ganglion_PyQt.py --board-id 4 --ip-address 10.0.1.37 --ip-port 3000
 
 import sys
 import argparse
@@ -23,14 +23,19 @@ import brainflow
 from brainflow.board_shim import BoardShim, BrainFlowInputParams
 from brainflow.data_filter import DataFilter, FilterTypes, AggOperations, WindowFunctions
 
-time_to_play_game = False
-board = None
-args = None
-sampling_rate = 0
-window = 0
+class BrainFlowObject(object):
 
-class BrainFlowObject():
-    def parse_arguments():
+    __instance = None
+
+    @classmethod
+    def get_instance(cls):
+        if cls.__instance is None:
+            cls.__instance = cls()
+        return cls.__instance
+    
+    def __init__(self):
+        self.time_to_play_game = True
+
         parser = argparse.ArgumentParser ()
         
         # use docs to check which parameters are required for specific board, e.g. for Cyton - set serial port
@@ -45,7 +50,6 @@ class BrainFlowObject():
         parser.add_argument ('--serial-number', type = str, help  = 'serial number', required = False, default = '')
         parser.add_argument ('--board-id', type = int, help  = 'board id, check docs to get a list of supported boards', required = True)
         parser.add_argument ('--log', action = 'store_true')
-        global args
         args = parser.parse_args ()
 
         params = BrainFlowInputParams ()
@@ -58,28 +62,27 @@ class BrainFlowObject():
         params.ip_protocol = args.ip_protocol
         params.timeout = args.timeout
 
-        global sampling_rate
-        global window
-        sampling_rate = BoardShim.get_sampling_rate (args.board_id)
-        window = sampling_rate*5 # 5 second window   
+        self.sampling_rate = BoardShim.get_sampling_rate (args.board_id)
+        # 5 second window
+        self.window = self.sampling_rate * 5
+        # initialize calibration and time variables
+        self.prev_time = int(round(time.time() * 1000))
+        self.time_thres =  1000
+        self.flex_thres = 0.8
 
         if (args.log):
             BoardShim.enable_dev_board_logger ()
         else:
             BoardShim.disable_board_logger ()
-        global board
-        board = BoardShim (args.board_id, params)
+
+        self.board = BoardShim (args.board_id, params)
         print("Arguments have been parsed...")
 
-    def connect_to_brainflow_board():
-        parse_arguments()
-        global board
-        tries = 3;
+        tries = 3
         for x in range(0, tries):
             try:
                 print("Attempting to connect. Try #%d" % x)
-                if (board is not None):
-                    board.prepare_session ()
+                self.board.prepare_session ()
                 break
             except brainflow.board_shim.BrainFlowError as e:
                 print(e)
@@ -90,47 +93,40 @@ class BrainFlowObject():
                 time.sleep(3)
 
         print("Instantiated BrainFlow Board! Now streaming data from Board!")
-        if (board is not None):
-            board.start_stream (45000)
-        
-        # initialize calibration and time variables
-        prev_time = int(round(time.time() * 1000))
-        time_thres =  1000
-        flex_thres = 0.8
+        self.board.start_stream (45000)       
 
-    def run():        
+    def run(self):        
         # Do the magic and control key presses if user toggles the controls button
-        if (time_to_play_game and board is not None):
-            data = board.get_current_board_data(window)
-            DataFilter.perform_rolling_filter (data[1], 2, AggOperations.MEAN.value) # denoise data
+        if (self.time_to_play_game):
+            data = self.board.get_current_board_data(self.window)
+            # denoise data
+            DataFilter.perform_rolling_filter (data[1], 2, AggOperations.MEAN.value)
             maximum = max(data[1])
             minimum = min(data[1])
-            norm_data = (data[1,(window-(int)(sampling_rate/2)):(window-1)] - minimum) / (maximum - minimum) # normalize as many samples as needed
-
-            do_action = (int(round(time.time() * 1000)) - time_thres) > prev_time
-            if(do_action): # if enough time has gone by since the last flex
-                prev_time = int(round(time.time() * 1000)) # update time
+            # normalize as many samples as needed
+            norm_data = (data[1,(self.window-(int)(self.sampling_rate/2)):(self.window-1)] - minimum) / (maximum - minimum)
+            # if enough time has gone by since the last flex
+            do_action = (int(round(time.time() * 1000)) - self.time_thres) > self.prev_time
+            if(do_action):
+                # update time
+                self.prev_time = int(round(time.time() * 1000))
                 for element in norm_data:
-                    if(element >= flex_thres):
+                    if(element >= self.flex_thres):
                         ##pyautogui.press('up') # jump
                         print("Jump! - " + ctime(time.time()))
-                        break  
+                        break
+    
+    def stop_session(self):
+        print("Stopping data stream and ending session.")
+        self.board.stop_stream ()
+        self.board.release_session ()
 
 def main ():
-
+    brainflow_board = BrainFlowObject.get_instance()
+    while True:
+        brainflow_board.run()
+    brainflow_board.stop_session()
     
-    do_action = False
-
-    # Main App Loop
-    # while True:
-        # Update and draw the GUI
-        # app.draw()
-        # root.update()
-        
-
-    print("Stopping data stream and ending session.")
-    board.stop_stream ()
-    board.release_session ()
 
 if __name__ == "__main__":
-    main ()
+    main()
